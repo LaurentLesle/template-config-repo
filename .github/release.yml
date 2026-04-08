@@ -1,0 +1,42 @@
+# ── Release Notes Configuration ───────────────────────────────────────────────
+#
+# Controls how GitHub auto-generates release notes from merged PRs.
+# Categories map PR labels to sections in the release notes.
+
+changelog:
+  categories:
+    - title: "🚀 New Resources & Features"
+      labels:
+        - enhancement
+        - feature
+    - title: "🔧 Configuration Changes"
+      labels:
+        - configuration
+        - infra
+    - title: "🔒 Security"
+      labels:
+        - security
+    - title: "🐛 Bug Fixes"
+      labels:
+        - bug
+        - fix
+    - title: "📦 Module Upgrades"
+      labels:
+        - dependencies
+        - upgrade
+    - title: "📖 Documentation"
+      labels:
+        - documentation
+    - title: "🔄 Template Sync"
+      labels:
+        - template-sync
+    - title: "🧹 Maintenance"
+      labels:
+        - chore
+        - maintenance
+    - title: "Other Changes"
+      labels:
+        - "*"
+  exclude:
+    labels:
+      - skip-changelog

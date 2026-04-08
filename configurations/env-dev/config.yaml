@@ -1,0 +1,41 @@
+# ── Dev Environment Configuration ─────────────────────────────────────────────
+#
+# Replace all placeholder values (<...>) with your actual values.
+#
+# Deploy:
+#   1. Create a PR with your changes → plan runs automatically
+#   2. Review the plan in the PR comment
+#   3. Merge to main → apply runs (dev environment, no approval gate)
+
+# ── State backend ────────────────────────────────────────────────────────────
+terraform_backend:
+  type: azurerm
+  storage_account_name: <tfstate-storage-account>
+  container_name: terraform
+  key: <org>/dev/<region>/core-infra/terraform.tfstate
+  resource_group_name: <tfstate-resource-group>
+
+# ── Subscription ─────────────────────────────────────────────────────────────
+subscription_id: "<azure-subscription-id>"
+
+# ── Resource Groups ──────────────────────────────────────────────────────────
+azure_resource_groups:
+  core:
+    subscription_id: "<azure-subscription-id>"
+    name: rg-<org>-dev-core
+    location: westeurope
+    tags:
+      environment: dev
+      managed_by: terraform
+
+# ── Storage Accounts (example — uncomment to use) ────────────────────────────
+# azure_storage_accounts:
+#   data:
+#     subscription_id: "<azure-subscription-id>"
+#     resource_group_name: ref:azure_resource_groups.core.name
+#     account_name: <org>devdata001
+#     sku_name: Standard_LRS
+#     kind: StorageV2
+#     location: ref:azure_resource_groups.core.location
+#     https_only: true
+#     tags: ref:azure_resource_groups.core.tags

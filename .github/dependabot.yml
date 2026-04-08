@@ -1,0 +1,22 @@
+# ── Dependabot Configuration ──────────────────────────────────────────────────
+#
+# Keeps GitHub Actions workflow references up to date.
+#
+# NOTE: Terraform module upgrades are handled by .github/workflows/check-upgrade.yml
+# which also generates migration reports. Dependabot only manages Actions here.
+
+version: 2
+
+updates:
+  # GitHub Actions workflow versions
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "github-actions"
+    commit-message:
+      prefix: "deps(actions):"

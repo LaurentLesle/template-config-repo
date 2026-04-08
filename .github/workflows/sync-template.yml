@@ -1,0 +1,149 @@
+# ── Sync Template Files ───────────────────────────────────────────────────────
+#
+# Periodically pulls non-config updates from the upstream template repository:
+#   - .github/copilot-instructions.md
+#   - .github/agents/
+#   - .github/skills/
+#   - .github/workflows/ (except deploy.yml which may be customized)
+#   - .github/dependabot.yml
+#   - .github/release.yml
+#   - .github/workflows/changelog.yml
+#   - CHANGELOG.md
+#   - main.tf, variables.tf, outputs.tf
+#   - docs/
+#
+# Opens a PR with changes for review — never commits directly to main.
+# Does NOT touch configurations/ — that is customer-owned.
+#
+# Prerequisites:
+#   Set TEMPLATE_REPO variable (default: LaurentLesle/template-config-repo)
+#   The workflow uses the default GITHUB_TOKEN — no extra secrets needed.
+
+name: Sync Template
+
+on:
+  schedule:
+    - cron: "0 8 * * 1" # Every Monday at 08:00 UTC
+  workflow_dispatch:
+    inputs:
+      template_ref:
+        description: "Template repo branch or tag to sync from"
+        required: false
+        default: "main"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  TEMPLATE_REPO: LaurentLesle/template-config-repo
+  TEMPLATE_REF: ${{ github.event.inputs.template_ref || 'main' }}
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout consumer repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch template files
+        run: |
+          # Clone template repo into a temp directory
+          git clone --depth 1 --branch "$TEMPLATE_REF" \
+            "https://github.com/${TEMPLATE_REPO}.git" /tmp/template
+
+      - name: Copy updatable files
+        run: |
+          # Files and directories to sync from template
+          # NOTE: configurations/ is NEVER synced — it is customer-owned
+          SYNC_PATHS=(
+            ".github/copilot-instructions.md"
+            ".github/agents/"
+            ".github/skills/"
+            ".github/ISSUE_TEMPLATE/"
+            ".github/pull_request_template.md"
+            ".github/dependabot.yml"
+            ".github/workflows/sync-template.yml"
+            ".github/workflows/changelog.yml"
+            ".github/release.yml"
+            "CHANGELOG.md"
+            "variables.tf"
+            "outputs.tf"
+            "docs/"
+          )
+
+          for path in "${SYNC_PATHS[@]}"; do
+            src="/tmp/template/${path}"
+            if [ -e "$src" ]; then
+              # Ensure parent directory exists
+              mkdir -p "$(dirname "$path")"
+              # Use cp -r for directories, cp for files
+              if [ -d "$src" ]; then
+                cp -r "$src" "$(dirname "$path")/"
+              else
+                cp "$src" "$path"
+              fi
+            fi
+          done
+
+      - name: Check for changes
+        id: changes
+        run: |
+          git add -A
+          if git diff --cached --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "### Changed files:" >> "$GITHUB_STEP_SUMMARY"
+            git diff --cached --name-only >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Create pull request
+        if: steps.changes.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BRANCH="sync/template-$(date +%Y%m%d)"
+
+          # Configure git
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Create branch and commit
+          git checkout -b "$BRANCH"
+          git commit -m "chore: sync template files from ${TEMPLATE_REPO}@${TEMPLATE_REF}"
+
+          # Push and create PR
+          git push origin "$BRANCH"
+
+          gh pr create \
+            --title "chore: sync template files ($(date +%Y-%m-%d))" \
+            --body "$(cat <<'EOF'
+          ## Template Sync
+
+          This PR updates shared files from the upstream template repository.
+
+          **Source**: \`${{ env.TEMPLATE_REPO }}@${{ env.TEMPLATE_REF }}\`
+
+          ### What's synced
+          - Copilot instructions, agents, and skills
+          - Terraform root module files (providers, variables, outputs)
+          - Documentation and issue templates
+          - Dependabot configuration
+          - Changelog workflow and release config
+
+          ### What's NOT synced
+          - `configurations/` — your environment configs are never overwritten
+          - `main.tf` — module source/version is managed by Dependabot
+          - `deploy.yml` — your deployment workflow may have custom matrix entries
+
+          ### Review checklist
+          - [ ] Check if any variable additions require new `TF_VAR_*` exports
+          - [ ] Verify skill changes don't conflict with local customizations
+          - [ ] Run `terraform plan` after merging to confirm compatibility
+          EOF
+          )" \
+            --label "dependencies" \
+            --base main

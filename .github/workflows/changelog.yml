@@ -1,0 +1,115 @@
+# ── Changelog Generator ───────────────────────────────────────────────────────
+#
+# Updates CHANGELOG.md whenever a GitHub release is published or when
+# triggered manually. Generates entries from merged PRs between releases
+# using conventional labels for categorization.
+#
+# Flow:
+#   Release published → generate changelog → commit to main
+#   Manual dispatch   → regenerate full changelog → commit to main
+#
+# The workflow uses GitHub's release API to fetch auto-generated notes
+# and writes them into CHANGELOG.md between the sentinel markers.
+
+name: Update Changelog
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      regenerate:
+        description: "Regenerate full changelog from all releases"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  changelog:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Generate changelog
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REGENERATE: ${{ github.event.inputs.regenerate || 'false' }}
+        run: |
+          set -euo pipefail
+
+          # Collect all releases sorted by date (newest first)
+          RELEASES=$(gh release list --limit 100 --json tagName,publishedAt,name \
+            --jq 'sort_by(.publishedAt) | reverse | .[] | "\(.tagName)\t\(.publishedAt)\t\(.name)"')
+
+          if [ -z "$RELEASES" ]; then
+            echo "No releases found — nothing to do"
+            exit 0
+          fi
+
+          # Build changelog content
+          CHANGELOG=""
+
+          while IFS=$'\t' read -r TAG DATE NAME; do
+            # Format date as YYYY-MM-DD
+            RELEASE_DATE=$(date -d "$DATE" +%Y-%m-%d 2>/dev/null || echo "$DATE" | cut -c1-10)
+
+            # Get release body (auto-generated notes from GitHub)
+            BODY=$(gh release view "$TAG" --json body -q '.body')
+
+            # Build section
+            CHANGELOG="${CHANGELOG}## [${NAME:-$TAG}] — ${RELEASE_DATE}"$'\n\n'
+
+            if [ -n "$BODY" ]; then
+              CHANGELOG="${CHANGELOG}${BODY}"$'\n\n'
+            else
+              CHANGELOG="${CHANGELOG}*No release notes provided.*"$'\n\n'
+            fi
+
+          done <<< "$RELEASES"
+
+          # Read current CHANGELOG.md and replace content between markers
+          if [ -f CHANGELOG.md ]; then
+            # Extract header (everything before START marker)
+            HEADER=$(sed -n '1,/<!-- CHANGELOG:START/p' CHANGELOG.md)
+            # Extract footer (everything after END marker)
+            FOOTER=$(sed -n '/<!-- CHANGELOG:END/,$p' CHANGELOG.md)
+          else
+            HEADER="# Changelog
+
+          All notable changes to this infrastructure configuration are documented in this file.
+
+          This changelog is automatically updated by the changelog workflow
+          when a new release is published.
+
+          The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+
+          <!-- CHANGELOG:START - Do not remove this marker -->"
+            FOOTER="<!-- CHANGELOG:END - Do not remove this marker -->"
+          fi
+
+          # Write the updated changelog
+          {
+            echo "$HEADER"
+            echo ""
+            echo "$CHANGELOG"
+            echo "$FOOTER"
+          } > CHANGELOG.md
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add CHANGELOG.md
+          if git diff --cached --quiet; then
+            echo "No changelog changes to commit"
+          else
+            git commit -m "docs: update CHANGELOG.md for ${{ github.event.release.tag_name || 'manual regeneration' }}"
+            git push origin main
+          fi

@@ -1,0 +1,2 @@
+# Infrastructure configurations
+configurations/**/*.yaml linguist-language=YAML

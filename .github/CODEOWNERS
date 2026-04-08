@@ -1,0 +1,12 @@
+# ── Code Owners ───────────────────────────────────────────────────────────────
+# Require review from the platform team for production changes.
+# Customize with your team's GitHub usernames or teams.
+
+# All config changes require platform team review
+configurations/ @platform-team
+
+# Production requires senior platform engineer approval
+configurations/env-prod/ @platform-team-leads
+
+# Workflow changes require platform team review
+.github/ @platform-team

@@ -1,0 +1,95 @@
+# ── Infrastructure Deployment ─────────────────────────────────────────────────
+#
+# Calls the reusable Terraform workflow from the module repository.
+#
+# Flow:
+#   PR opened/updated → plan (per changed environment)
+#   PR merged to main → apply (with environment approval gates)
+#
+# Prerequisites:
+#   1. Set repository secrets: AZURE_CLIENT_ID_DEV, AZURE_CLIENT_ID_PROD,
+#      AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID_DEV, AZURE_SUBSCRIPTION_ID_PROD
+#   2. Set repository variables: AZURE_BACKEND_STORAGE_ACCOUNT_DEV,
+#      AZURE_BACKEND_STORAGE_ACCOUNT_PROD, AZURE_BACKEND_RESOURCE_GROUP_DEV,
+#      AZURE_BACKEND_RESOURCE_GROUP_PROD, AZURE_BACKEND_CONTAINER_NAME
+#   3. Create GitHub Environments: "dev" and "prod"
+#   4. Add required reviewers to "prod" environment
+
+name: Deploy Infrastructure
+
+on:
+  pull_request:
+    paths:
+      - "configurations/**"
+      - ".github/workflows/deploy.yml"
+  push:
+    branches: [main]
+    paths:
+      - "configurations/**"
+
+# ── Pin module repo version ──────────────────────────────────────────────────
+# Update this when upgrading to a new module release.
+# Always test in dev before promoting to prod.
+env:
+  MODULE_REPO_TAG: v1.0.1
+
+jobs:
+  # ════════════════════════════════════════════════════════════════════════════
+  # PLAN — runs all environments in parallel on PR
+  # ════════════════════════════════════════════════════════════════════════════
+  plan:
+    if: github.event_name == 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - environment: dev
+            config_file: configurations/env-dev/config.yaml
+            secret_suffix: DEV
+          - environment: prod
+            config_file: configurations/env-prod/config.yaml
+            secret_suffix: PROD
+    uses: LaurentLesle/terraform-rest-galaxy/.github/workflows/deploy.yml@v1.0.1
+    with:
+      config_file: ${{ matrix.config_file }}
+      action: plan
+      environment: ${{ matrix.environment }}
+      module_version: v1.0.1
+      backend_storage_account: ${{ vars[format('AZURE_BACKEND_STORAGE_ACCOUNT_{0}', matrix.secret_suffix)] }}
+      backend_resource_group: ${{ vars[format('AZURE_BACKEND_RESOURCE_GROUP_{0}', matrix.secret_suffix)] }}
+      backend_container_name: ${{ vars.AZURE_BACKEND_CONTAINER_NAME }}
+    secrets:
+      AZURE_CLIENT_ID: ${{ secrets[format('AZURE_CLIENT_ID_{0}', matrix.secret_suffix)] }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ secrets[format('AZURE_SUBSCRIPTION_ID_{0}', matrix.secret_suffix)] }}
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # APPLY — runs sequentially (dev → prod) on merge to main
+  # Ordering is enforced by max-parallel + GitHub Environment approval gates.
+  # ════════════════════════════════════════════════════════════════════════════
+  apply:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    strategy:
+      fail-fast: true
+      max-parallel: 1
+      matrix:
+        include:
+          - environment: dev
+            config_file: configurations/env-dev/config.yaml
+            secret_suffix: DEV
+          - environment: prod
+            config_file: configurations/env-prod/config.yaml
+            secret_suffix: PROD
+    uses: LaurentLesle/terraform-rest-galaxy/.github/workflows/deploy.yml@v1.0.1
+    with:
+      config_file: ${{ matrix.config_file }}
+      action: apply
+      environment: ${{ matrix.environment }}
+      module_version: v1.0.1
+      backend_storage_account: ${{ vars[format('AZURE_BACKEND_STORAGE_ACCOUNT_{0}', matrix.secret_suffix)] }}
+      backend_resource_group: ${{ vars[format('AZURE_BACKEND_RESOURCE_GROUP_{0}', matrix.secret_suffix)] }}
+      backend_container_name: ${{ vars.AZURE_BACKEND_CONTAINER_NAME }}
+    secrets:
+      AZURE_CLIENT_ID: ${{ secrets[format('AZURE_CLIENT_ID_{0}', matrix.secret_suffix)] }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ secrets[format('AZURE_SUBSCRIPTION_ID_{0}', matrix.secret_suffix)] }}

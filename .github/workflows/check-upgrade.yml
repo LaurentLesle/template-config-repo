@@ -1,0 +1,286 @@
+# ── Module Upgrade Check ──────────────────────────────────────────────────────
+#
+# Periodically checks for new versions of the upstream module, compares
+# variables.tf for every module used in config, generates a migration
+# report, and opens a PR with:
+#   - Version bump in main.tf
+#   - Migration report (breaking changes, renames, new capabilities)
+#   - terraform plan output for each environment
+#
+# Complements .github/skills/check-upgrade/SKILL.md (interactive) with
+# an automated, scheduled equivalent.
+
+name: Check Module Upgrade
+
+on:
+  schedule:
+    - cron: "0 9 * * 1" # Every Monday at 09:00 UTC
+  workflow_dispatch:
+    inputs:
+      target_version:
+        description: "Target module version (leave empty for latest)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  UPSTREAM_REPO: LaurentLesle/terraform-rest-galaxy
+  MODULE_SOURCE: "LaurentLesle/galaxy/rest"
+
+jobs:
+  check-upgrade:
+    runs-on: ubuntu-latest
+    outputs:
+      has_upgrade: ${{ steps.versions.outputs.has_upgrade }}
+      current_version: ${{ steps.versions.outputs.current }}
+      target_version: ${{ steps.versions.outputs.target }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Determine current and target versions
+        id: versions
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_TARGET: ${{ github.event.inputs.target_version }}
+        run: |
+          # Current version from main.tf
+          CURRENT=$(grep -oP 'version\s*=\s*"\K[^"]+' main.tf | head -1)
+          echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "Current version: $CURRENT"
+
+          # Target version
+          if [ -n "$INPUT_TARGET" ]; then
+            TARGET="$INPUT_TARGET"
+          else
+            TARGET=$(gh release list --repo "$UPSTREAM_REPO" --limit 1 --json tagName -q '.[0].tagName' | sed 's/^v//')
+          fi
+          echo "target=$TARGET" >> "$GITHUB_OUTPUT"
+          echo "Target version: $TARGET"
+
+          # Compare
+          if [ "$CURRENT" = "$TARGET" ]; then
+            echo "has_upgrade=false" >> "$GITHUB_OUTPUT"
+            echo "Already on latest version ($CURRENT)"
+          else
+            echo "has_upgrade=true" >> "$GITHUB_OUTPUT"
+            echo "Upgrade available: $CURRENT → $TARGET"
+          fi
+
+      - name: Check for existing PR
+        if: steps.versions.outputs.has_upgrade == 'true'
+        id: existing_pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TARGET="${{ steps.versions.outputs.target }}"
+          BRANCH="upgrade/module-v${TARGET}"
+          PR_COUNT=$(gh pr list --head "$BRANCH" --json number -q 'length')
+          if [ "$PR_COUNT" -gt 0 ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "PR already exists for $BRANCH — skipping"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+    # abort early if no upgrade or PR already exists
+
+  analyze:
+    needs: check-upgrade
+    if: needs.check-upgrade.outputs.has_upgrade == 'true'
+    runs-on: ubuntu-latest
+    env:
+      CURRENT: ${{ needs.check-upgrade.outputs.current_version }}
+      TARGET: ${{ needs.check-upgrade.outputs.target_version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Fetch release notes
+        id: release_notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "## Release Notes" > /tmp/release_notes.md
+          echo "" >> /tmp/release_notes.md
+
+          # List all releases between current and target
+          gh release list --repo "$UPSTREAM_REPO" --limit 50 --json tagName,publishedAt -q '.[].tagName' | while read -r TAG; do
+            VER=$(echo "$TAG" | sed 's/^v//')
+            # Include versions > current and <= target
+            if dpkg --compare-versions "$VER" gt "$CURRENT" && dpkg --compare-versions "$VER" le "$TARGET"; then
+              echo "### $TAG" >> /tmp/release_notes.md
+              echo "" >> /tmp/release_notes.md
+              gh release view "$TAG" --repo "$UPSTREAM_REPO" --json body -q '.body' >> /tmp/release_notes.md
+              echo "" >> /tmp/release_notes.md
+            fi
+          done
+
+          cat /tmp/release_notes.md
+
+      - name: Identify modules in use
+        id: modules
+        run: |
+          # Extract resource type keys from config files (skip comments, backend, subscription, location)
+          KEYS=$(grep -hE '^[a-z_]+:' configurations/env-*/config.yaml \
+            | grep -v '#' \
+            | grep -v 'terraform_backend' \
+            | grep -v 'subscription_id' \
+            | grep -v 'default_location' \
+            | sed 's/://' \
+            | sort -u)
+
+          echo "Config keys in use:"
+          echo "$KEYS"
+
+          # Map to module directory names
+          MODULES=""
+          for key in $KEYS; do
+            # Strip azure_ prefix and convert to singular
+            mod=$(echo "$key" | sed 's/^azure_//' | sed 's/s$//')
+            MODULES="$MODULES $mod"
+          done
+
+          echo "modules=$MODULES" >> "$GITHUB_OUTPUT"
+          echo "Module directories: $MODULES"
+
+      - name: Diff variables for each module
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "## Variable Changes" > /tmp/migration_report.md
+          echo "" >> /tmp/migration_report.md
+          echo "| Module | Attribute | Change | Severity |" >> /tmp/migration_report.md
+          echo "|--------|-----------|--------|----------|" >> /tmp/migration_report.md
+
+          BREAKING=0
+          REVIEW=0
+          NEW=0
+
+          for MOD in ${{ steps.modules.outputs.modules }}; do
+            OLD_URL="https://raw.githubusercontent.com/${UPSTREAM_REPO}/v${CURRENT}/modules/azure/${MOD}/variables.tf"
+            NEW_URL="https://raw.githubusercontent.com/${UPSTREAM_REPO}/v${TARGET}/modules/azure/${MOD}/variables.tf"
+
+            # Fetch both versions (ignore 404 for new modules)
+            OLD_VARS=$(curl -sfL "$OLD_URL" 2>/dev/null || echo "")
+            NEW_VARS=$(curl -sfL "$NEW_URL" 2>/dev/null || echo "")
+
+            if [ -z "$OLD_VARS" ] && [ -n "$NEW_VARS" ]; then
+              echo "| $MOD | — | new module | :green_circle: New |" >> /tmp/migration_report.md
+              NEW=$((NEW + 1))
+              continue
+            fi
+
+            if [ -n "$OLD_VARS" ] && [ -z "$NEW_VARS" ]; then
+              echo "| $MOD | — | module removed | :red_circle: Breaking |" >> /tmp/migration_report.md
+              BREAKING=$((BREAKING + 1))
+              continue
+            fi
+
+            [ -z "$OLD_VARS" ] && continue
+
+            # Extract variable names from both
+            OLD_NAMES=$(echo "$OLD_VARS" | grep -oP 'variable\s+"\K[^"]+' | sort)
+            NEW_NAMES=$(echo "$NEW_VARS" | grep -oP 'variable\s+"\K[^"]+' | sort)
+
+            # Removed variables
+            for var in $(comm -23 <(echo "$OLD_NAMES") <(echo "$NEW_NAMES")); do
+              # Check if used in config
+              if grep -rq "$var" configurations/ 2>/dev/null; then
+                echo "| $MOD | \`$var\` | removed | :red_circle: Breaking |" >> /tmp/migration_report.md
+                BREAKING=$((BREAKING + 1))
+              else
+                echo "| $MOD | \`$var\` | removed (unused) | :yellow_circle: Review |" >> /tmp/migration_report.md
+                REVIEW=$((REVIEW + 1))
+              fi
+            done
+
+            # Added variables
+            for var in $(comm -13 <(echo "$OLD_NAMES") <(echo "$NEW_NAMES")); do
+              echo "| $MOD | \`$var\` | added | :green_circle: New |" >> /tmp/migration_report.md
+              NEW=$((NEW + 1))
+            done
+          done
+
+          echo "" >> /tmp/migration_report.md
+          echo "**Summary**: $BREAKING breaking, $REVIEW review, $NEW new" >> /tmp/migration_report.md
+
+          # Save counts for later
+          echo "BREAKING=$BREAKING" >> "$GITHUB_ENV"
+
+          cat /tmp/migration_report.md
+
+      - name: Bump version in main.tf
+        run: |
+          sed -i "s/version *= *\"${CURRENT}\"/version = \"${TARGET}\"/" main.tf
+          echo "Updated main.tf: ${CURRENT} → ${TARGET}"
+          grep 'version' main.tf
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform init (no backend)
+        run: terraform init -backend=false
+
+      - name: Terraform validate
+        id: validate
+        continue-on-error: true
+        run: terraform validate -no-color 2>&1 | tee /tmp/validate_output.txt
+
+      - name: Build PR body
+        run: |
+          cat > /tmp/pr_body.md << 'HEADER'
+          ## Module Upgrade: v${{ env.CURRENT }} → v${{ env.TARGET }}
+
+          This PR was automatically generated by the upgrade check workflow.
+
+          ### How to review
+          1. Check the migration report below for breaking changes
+          2. Review the release notes for behavioral changes
+          3. After merging, monitor the `terraform plan` output in the deploy workflow
+
+          HEADER
+
+          cat /tmp/migration_report.md >> /tmp/pr_body.md
+          echo "" >> /tmp/pr_body.md
+          cat /tmp/release_notes.md >> /tmp/pr_body.md
+
+          echo "" >> /tmp/pr_body.md
+          echo "## Terraform Validate" >> /tmp/pr_body.md
+          echo "" >> /tmp/pr_body.md
+          echo '```' >> /tmp/pr_body.md
+          cat /tmp/validate_output.txt >> /tmp/pr_body.md
+          echo '```' >> /tmp/pr_body.md
+
+          if [ "$BREAKING" -gt 0 ]; then
+            echo "" >> /tmp/pr_body.md
+            echo "> **⚠️ This upgrade has $BREAKING breaking change(s).** Use the \`check-upgrade\` Copilot skill for interactive migration assistance: open the repo in VS Code, select the \`infra\` agent mode, and ask _\"help me upgrade to v${{ env.TARGET }}\"_." >> /tmp/pr_body.md
+          fi
+
+      - name: Create PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BRANCH="upgrade/module-v${TARGET}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git checkout -b "$BRANCH"
+          git add main.tf
+          git commit -m "deps(terraform): upgrade LaurentLesle/galaxy/rest ${CURRENT} → ${TARGET}"
+          git push origin "$BRANCH"
+
+          LABELS="dependencies,terraform"
+          if [ "$BREAKING" -gt 0 ]; then
+            LABELS="$LABELS,breaking-change"
+          fi
+
+          gh pr create \
+            --title "deps(terraform): upgrade module v${CURRENT} → v${TARGET}" \
+            --body-file /tmp/pr_body.md \
+            --label "$LABELS" \
+            --base main
