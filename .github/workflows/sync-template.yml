@@ -65,7 +65,9 @@ jobs:
             ".github/ISSUE_TEMPLATE/"
             ".github/pull_request_template.md"
             ".github/dependabot.yml"
+            ".github/workflows/deploy.yml"
             ".github/workflows/sync-template.yml"
+            ".github/workflows/sync-environments.yml"
             ".github/workflows/changelog.yml"
             ".github/release.yml"
             "CHANGELOG.md"
@@ -118,6 +120,9 @@ jobs:
           # Push and create PR
           git push origin "$BRANCH"
 
+          # Ensure the label exists before creating the PR
+          gh label create "dependencies" --description "Pull requests that update a dependency" --color 0366d6 2>/dev/null || true
+
           gh pr create \
             --title "chore: sync template files ($(date +%Y-%m-%d))" \
             --body "$(cat <<'EOF'
@@ -137,7 +142,6 @@ jobs:
           ### What's NOT synced
           - `configurations/` — your environment configs are never overwritten
           - `main.tf` — module source/version is managed by Dependabot
-          - `deploy.yml` — your deployment workflow may have custom matrix entries
 
           ### Review checklist
           - [ ] Check if any variable additions require new `TF_VAR_*` exports
