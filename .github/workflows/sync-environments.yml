@@ -1,0 +1,44 @@
+# ── Sync GitHub Environments ──────────────────────────────────────────────────
+#
+# Auto-creates GitHub Environments based on configurations/env-*/config.yaml.
+# Runs when configuration directories are added/removed, or on manual trigger.
+#
+# This ensures the GitHub Environments (Settings → Environments) stay in sync
+# with the config directory layout. Protection rules (reviewers, wait timers)
+# must still be configured manually in the GitHub UI.
+
+name: Sync Environments
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "configurations/**/config.yaml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: configurations
+
+      - name: Sync GitHub Environments
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Scanning configurations/env-*/config.yaml..."
+          for dir in configurations/env-*/; do
+            [ -f "${dir}config.yaml" ] || continue
+            env_name="${dir#configurations/env-}"
+            env_name="${env_name%/}"
+            echo "Ensuring environment exists: $env_name"
+            gh api --method PUT \
+              "repos/${{ github.repository }}/environments/${env_name}" \
+              --silent || echo "  ⚠️  Failed to create environment: $env_name (may need admin permissions)"
+          done
+          echo "✓ Environment sync complete"

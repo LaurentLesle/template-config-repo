@@ -2,6 +2,10 @@
 
 **Description**: Verify whether Terraform modules exist in the upstream `LaurentLesle/terraform-rest-galaxy` repository and whether they support the requested properties. Use when: generating config, checking module availability, gap analysis, verifying properties, module exists, variable check, schema check.
 
+## Critical Constraint
+
+> **ONLY search in `LaurentLesle/terraform-rest-galaxy`.** Do NOT use `github_repo`, code-search, or any tool that searches across multiple repositories. Use ONLY `fetch_webpage` with the exact URLs specified below, or `ls`/`cat` on a local clone of the upstream repo. Never infer module contents from other Terraform providers, the Terraform registry, or any other source.
+
 ## When to Use
 
 Invoke this skill whenever you need to:

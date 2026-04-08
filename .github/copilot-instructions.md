@@ -8,9 +8,13 @@ upstream module repository [LaurentLesle/terraform-rest-galaxy](https://github.c
 
 ## Config File Location
 
-- Dev: `configurations/env-dev/config.yaml`
-- Prod: `configurations/env-prod/config.yaml`
-- Additional environments follow the pattern: `configurations/env-{name}/config.yaml`
+Environments are auto-discovered from `configurations/env-{name}/config.yaml`.
+Add or remove directories to change which environments are deployed — no workflow edits needed.
+
+Examples:
+- `configurations/env-dev/config.yaml`
+- `configurations/env-prod/config.yaml`
+- `configurations/env-global/config.yaml`
 
 ## YAML Config Schema
 
@@ -146,8 +150,17 @@ The `subscription_id` is typically inherited from the root-level `subscription_i
 
 ## CI/CD Pipeline
 
-The `.github/workflows/deploy.yml` workflow uses a matrix strategy to plan/apply across environments.
+The `.github/workflows/deploy.yml` workflow **auto-discovers** environments by scanning `configurations/env-*/config.yaml`.
 Config changes trigger the pipeline automatically. Never modify the pipeline to include Terraform code.
+
+### Adding a New Environment
+
+1. Create `configurations/env-{name}/config.yaml`
+2. Set up secrets & variables (suffix = uppercase env name, hyphens → underscores):
+   - Secrets: `AZURE_CLIENT_ID_{SUFFIX}`, `AZURE_SUBSCRIPTION_ID_{SUFFIX}`, `AZURE_TENANT_ID`
+   - Variables: `AZURE_BACKEND_STORAGE_ACCOUNT_{SUFFIX}`, `AZURE_BACKEND_RESOURCE_GROUP_{SUFFIX}`, `AZURE_BACKEND_CONTAINER_NAME`
+3. The `sync-environments.yml` workflow auto-creates the GitHub Environment on push to main.
+   Protection rules (required reviewers, wait timers) must be added manually in Settings → Environments.
 
 ## Upstream Module Repository
 
@@ -155,3 +168,15 @@ Config changes trigger the pipeline automatically. Never modify the pipeline to 
 - Modules: `modules/azure/<resource_type>/`  
 - Each module has: `main.tf`, `variables.tf`, `outputs.tf`, `versions.tf`
 - Module variables define what properties can be set in config YAML
+
+## Upstream Search Constraint
+
+When checking module availability, reading module variables, or performing any lookup against the upstream modules:
+
+1. **ONLY** search in `LaurentLesle/terraform-rest-galaxy` — never in any other repository.
+2. Use `fetch_webpage` with the exact raw GitHub URLs below — do NOT use `github_repo` or any other broad search tool:
+   - Module listing: `https://github.com/LaurentLesle/terraform-rest-galaxy/tree/main/modules/azure`
+   - Module variables: `https://raw.githubusercontent.com/LaurentLesle/terraform-rest-galaxy/main/modules/azure/<module_name>/variables.tf`
+   - Module outputs: `https://raw.githubusercontent.com/LaurentLesle/terraform-rest-galaxy/main/modules/azure/<module_name>/outputs.tf`
+3. If the upstream repo is cloned locally, you may use `ls` / `cat` on the local clone instead.
+4. **Never** search GitHub broadly, search other organisations, or guess module contents from other Terraform providers or registries.

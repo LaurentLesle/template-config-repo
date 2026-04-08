@@ -6,14 +6,12 @@
 #   PR opened/updated → plan (per changed environment)
 #   PR merged to main → apply (with environment approval gates)
 #
-# Prerequisites:
-#   1. Set repository secrets: AZURE_CLIENT_ID_DEV, AZURE_CLIENT_ID_PROD,
-#      AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID_DEV, AZURE_SUBSCRIPTION_ID_PROD
-#   2. Set repository variables: AZURE_BACKEND_STORAGE_ACCOUNT_DEV,
-#      AZURE_BACKEND_STORAGE_ACCOUNT_PROD, AZURE_BACKEND_RESOURCE_GROUP_DEV,
-#      AZURE_BACKEND_RESOURCE_GROUP_PROD, AZURE_BACKEND_CONTAINER_NAME
-#   3. Create GitHub Environments: "dev" and "prod"
-#   4. Add required reviewers to "prod" environment
+# Environments are auto-discovered from configurations/env-*/config.yaml.
+# For each environment "foo", configure:
+#   - Secrets:   AZURE_CLIENT_ID_FOO, AZURE_SUBSCRIPTION_ID_FOO, AZURE_TENANT_ID
+#   - Variables: AZURE_BACKEND_STORAGE_ACCOUNT_FOO, AZURE_BACKEND_RESOURCE_GROUP_FOO,
+#                AZURE_BACKEND_CONTAINER_NAME
+#   - GitHub Environment: create via Settings → Environments (or sync-environments workflow)
 
 name: Deploy Infrastructure
 
@@ -29,32 +27,56 @@ on:
 
 # ── Pin module repo version ──────────────────────────────────────────────────
 # Update this when upgrading to a new module release.
-# Always test in dev before promoting to prod.
 env:
-  MODULE_REPO_TAG: v1.0.1
+  MODULE_REPO_TAG: v1.0.2
 
 jobs:
+  # ════════════════════════════════════════════════════════════════════════════
+  # DISCOVER — scan configurations/env-* to build a dynamic matrix
+  # ════════════════════════════════════════════════════════════════════════════
+  discover:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.scan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: configurations
+      - name: Scan environments
+        id: scan
+        run: |
+          matrix="[]"
+          for dir in configurations/env-*/; do
+            [ -f "${dir}config.yaml" ] || continue
+            env_name="${dir#configurations/env-}"
+            env_name="${env_name%/}"
+            # Secret suffix: uppercase, hyphens → underscores
+            suffix=$(echo "$env_name" | tr '[:lower:]-' '[:upper:]_')
+            matrix=$(echo "$matrix" | jq -c \
+              --arg e "$env_name" \
+              --arg c "${dir}config.yaml" \
+              --arg s "$suffix" \
+              '. + [{"environment": $e, "config_file": $c, "secret_suffix": $s}]')
+          done
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "Discovered environments: $matrix"
+
   # ════════════════════════════════════════════════════════════════════════════
   # PLAN — runs all environments in parallel on PR
   # ════════════════════════════════════════════════════════════════════════════
   plan:
+    needs: discover
     if: github.event_name == 'pull_request'
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - environment: dev
-            config_file: configurations/env-dev/config.yaml
-            secret_suffix: DEV
-          - environment: prod
-            config_file: configurations/env-prod/config.yaml
-            secret_suffix: PROD
-    uses: LaurentLesle/terraform-rest-galaxy/.github/workflows/deploy.yml@v1.0.1
+        include: ${{ fromJson(needs.discover.outputs.matrix) }}
+    uses: LaurentLesle/terraform-rest-galaxy/.github/workflows/deploy.yml@v1.0.2
     with:
       config_file: ${{ matrix.config_file }}
       action: plan
       environment: ${{ matrix.environment }}
-      module_version: v1.0.1
+      module_version: v1.0.2
       backend_storage_account: ${{ vars[format('AZURE_BACKEND_STORAGE_ACCOUNT_{0}', matrix.secret_suffix)] }}
       backend_resource_group: ${{ vars[format('AZURE_BACKEND_RESOURCE_GROUP_{0}', matrix.secret_suffix)] }}
       backend_container_name: ${{ vars.AZURE_BACKEND_CONTAINER_NAME }}
@@ -64,28 +86,23 @@ jobs:
       AZURE_SUBSCRIPTION_ID: ${{ secrets[format('AZURE_SUBSCRIPTION_ID_{0}', matrix.secret_suffix)] }}
 
   # ════════════════════════════════════════════════════════════════════════════
-  # APPLY — runs sequentially (dev → prod) on merge to main
+  # APPLY — runs sequentially on merge to main
   # Ordering is enforced by max-parallel + GitHub Environment approval gates.
   # ════════════════════════════════════════════════════════════════════════════
   apply:
+    needs: discover
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     strategy:
       fail-fast: true
       max-parallel: 1
       matrix:
-        include:
-          - environment: dev
-            config_file: configurations/env-dev/config.yaml
-            secret_suffix: DEV
-          - environment: prod
-            config_file: configurations/env-prod/config.yaml
-            secret_suffix: PROD
-    uses: LaurentLesle/terraform-rest-galaxy/.github/workflows/deploy.yml@v1.0.1
+        include: ${{ fromJson(needs.discover.outputs.matrix) }}
+    uses: LaurentLesle/terraform-rest-galaxy/.github/workflows/deploy.yml@v1.0.2
     with:
       config_file: ${{ matrix.config_file }}
       action: apply
       environment: ${{ matrix.environment }}
-      module_version: v1.0.1
+      module_version: v1.0.2
       backend_storage_account: ${{ vars[format('AZURE_BACKEND_STORAGE_ACCOUNT_{0}', matrix.secret_suffix)] }}
       backend_resource_group: ${{ vars[format('AZURE_BACKEND_RESOURCE_GROUP_{0}', matrix.secret_suffix)] }}
       backend_container_name: ${{ vars.AZURE_BACKEND_CONTAINER_NAME }}
