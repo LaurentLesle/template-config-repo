@@ -220,7 +220,7 @@ jobs:
           grep 'version' main.tf
 
       - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
+        uses: hashicorp/setup-terraform@v4
 
       - name: Terraform init (no backend)
         run: terraform init -backend=false
