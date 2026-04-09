@@ -29,7 +29,7 @@ terraform_backend:
   key: <org>/<env>/<region>/<workload>/terraform.tfstate
   resource_group_name: <name>
 
-# Required — target subscription
+# Required — target subscription (existing subscription to deploy INTO, not for creating new ones)
 subscription_id: "<guid>"
 
 # Optional — default location for all resources
@@ -67,7 +67,27 @@ Reference format: `ref:<config_key>.<logical_key>.<attribute>`
 Special references:
 - `ref:caller.object_id` — the current user/service principal object ID
 - `ref:externals.<type>.<key>.<attribute>` — external (non-managed) resources
-- `ref:remote_states.<key>.<path>` — cross-stack remote state outputs
+- `ref:remote_states.<key>.<path>` — cross-stack remote state outputs (see "Consuming subscriptions from a remote state" below)
+
+### Remote state dependencies (`remote_tfstates`)
+
+To reference outputs from another environment's state, declare the remote state in `remote_tfstates` at the root of the config:
+
+```yaml
+remote_tfstates:
+  subscriptions:                              # arbitrary key used in ref:
+    type: azurerm
+    storage_account_name: <tfstate-storage-account>
+    container_name: terraform
+    key: <org>/subscriptions/<region>/core/terraform.tfstate
+    resource_group_name: <tfstate-resource-group>
+```
+
+Then reference its outputs anywhere in the same config file:
+
+```yaml
+ref:remote_states.subscriptions.azure_subscriptions.app.subscription_id
+```
 
 ## Config Key to Module Mapping
 
@@ -116,7 +136,7 @@ The config key is the plural form; the module directory is the singular form.
 | `azure_ipam_static_cidrs` | `ipam_static_cidr` | depends on module |
 | `azure_resource_provider_registrations` | `resource_provider_registration` | `resource_provider_namespace` |
 | `azure_resource_provider_features` | `resource_provider_feature` | depends on module |
-| `azure_subscriptions` | `subscription` | depends on module |
+| `azure_subscriptions` | `subscription` | `alias_name`, `display_name`, `billing_scope`, `workload` |
 | `azure_billing_associated_tenants` | `billing_associated_tenant` | depends on module |
 | `azure_communication_services` | `communication_service` | depends on module |
 | `azure_email_communication_services` | `email_communication_service` | depends on module |
@@ -142,6 +162,62 @@ azure_storage_accounts:
     location: ref:azure_resource_groups.core.location
     tags: ref:azure_resource_groups.core.tags
 ```
+
+### Creating multiple subscriptions in a single config file
+
+The root-level `subscription_id` is the **deployment target** (an existing subscription the pipeline authenticates against).
+To **provision new subscriptions**, use `azure_subscriptions` with one logical key per subscription:
+
+```yaml
+azure_subscriptions:
+  app:
+    alias_name: sub-dev-app
+    display_name: "Dev - Application"
+    billing_scope: /billingAccounts/<billing-account>/enrollmentAccounts/<enrollment-account>
+    workload: DevTest
+    management_group_id: /providers/Microsoft.Management/managementGroups/dev
+    tags:
+      environment: dev
+      purpose: application
+  data:
+    alias_name: sub-dev-data
+    display_name: "Dev - Data Platform"
+    billing_scope: /billingAccounts/<billing-account>/enrollmentAccounts/<enrollment-account>
+    workload: DevTest
+    management_group_id: /providers/Microsoft.Management/managementGroups/dev
+    tags:
+      environment: dev
+      purpose: data-platform
+```
+
+Each logical key (`app`, `data`) creates a separate subscription. Group all subscriptions for the same environment in one config file.
+
+### Consuming subscriptions from a remote state
+
+Most configurations (networking, compute, etc.) deploy **into** subscriptions that were already created by a separate config.
+Declare a `remote_tfstates` entry pointing to the subscription state, then use `ref:remote_states` to pull the subscription ID:
+
+```yaml
+# configurations/env-networking/config.yaml
+
+remote_tfstates:
+  subscriptions:
+    type: azurerm
+    storage_account_name: <tfstate-storage-account>
+    container_name: terraform
+    key: <org>/subscriptions/<region>/core/terraform.tfstate
+    resource_group_name: <tfstate-resource-group>
+
+azure_virtual_wans:
+  hub:
+    subscription_id: ref:remote_states.subscriptions.azure_subscriptions.app.subscription_id
+    resource_group_name: ref:azure_resource_groups.networking.name
+    wan_name: vwan-hub-001
+    location: ref:azure_resource_groups.networking.location
+    tags: ref:azure_resource_groups.networking.tags
+```
+
+This is the standard pattern: one config file creates subscriptions, and downstream configs consume their `subscription_id` via remote state.
 
 ### Properties in config map directly to module variables
 
