@@ -117,8 +117,15 @@ jobs:
           git checkout -b "$BRANCH"
           git commit -m "chore: sync template files from ${TEMPLATE_REPO}@${TEMPLATE_REF}"
 
-          # Push and create PR
-          git push origin "$BRANCH"
+          # Push (force in case branch exists from a previous failed run)
+          git push --force -u origin "$BRANCH"
+
+          # Skip PR creation if one already exists for this branch
+          EXISTING_PR=$(gh pr list --head "$BRANCH" --json number --jq '.[0].number' 2>/dev/null || true)
+          if [ -n "$EXISTING_PR" ]; then
+            echo "PR #${EXISTING_PR} already exists for branch ${BRANCH} — skipping creation."
+            exit 0
+          fi
 
           # Ensure the label exists before creating the PR
           gh label create "dependencies" --description "Pull requests that update a dependency" --color 0366d6 2>/dev/null || true
