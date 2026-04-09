@@ -9,6 +9,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 <!-- CHANGELOG:START - Do not remove this marker -->
 
+## [v1.0.2] — 2026-04-09
+
+<!-- Release notes generated using configuration in .github/release.yml at v1.0.2 -->
+
+
+
+**Full Changelog**: https://github.com/LaurentLesle/template-config-repo/compare/v1.0.1...v1.0.2
+
 ## [v1.0.1] — 2026-04-08
 
 ### What's Changed
