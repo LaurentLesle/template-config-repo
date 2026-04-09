@@ -39,7 +39,7 @@ jobs:
       target_version: ${{ steps.versions.outputs.target }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Determine current and target versions
         id: versions
@@ -97,7 +97,7 @@ jobs:
       TARGET: ${{ needs.check-upgrade.outputs.target_version }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Fetch release notes
         id: release_notes
