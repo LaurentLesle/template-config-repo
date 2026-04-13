@@ -15,7 +15,7 @@
 
 module "infrastructure" {
   source  = "LaurentLesle/galaxy/rest"
-  version = "1.0.1"
+  version = "1.4.3"
 
   # Config
   config_file = var.config_file
